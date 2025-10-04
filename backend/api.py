@@ -91,9 +91,10 @@ async def process_ai_data(payload: DataPayload):
     print(f"CSV Header Preview:\n{csv_in_memory.splitlines()[0]}")
     print("-" * 50)
 
+
     # Return the details the 'other AI' needs to fetch the data
-    # Note: Using hardcoded localhost URL for local testing.
-    fetch_url = f"http://localhost:8000/fetch_data/{data_id}"
+    # Use Railway production domain
+    fetch_url = f"https://elegant-consideration-production.up.railway.app/fetch_data/{data_id}"
 
     return JSONResponse(
         status_code=200,

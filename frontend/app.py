@@ -10,7 +10,7 @@ import google.generativeai as genai
 
 # Define the FastAPI endpoint URL (POST endpoint for sending data)
 # This must match the host/port where your api.py server is running.
-API_ENDPOINT = "http://localhost:8000/process_ai_data"
+API_ENDPOINT = "https://elegant-consideration-production.up.railway.app/process_ai_data"
 
 
 # Load environment variables
