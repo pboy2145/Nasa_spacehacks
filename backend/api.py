@@ -1,11 +1,14 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, Response 
 from pydantic import BaseModel
+
 import pandas as pd
 import json
 import io
-import uuid 
-import time # Used for simulated data expiration/cleanup (optional, but good practice)
+import uuid
+import time
+import sqlite3
+import os
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -13,12 +16,31 @@ app = FastAPI(
     description="Receives JSON data from Streamlit, converts it to CSV, and provides a fetch endpoint."
 )
 
-# --- GLOBAL IN-MEMORY DATA STORAGE ---
-# Stores the data (CSV string) keyed by a unique ID.
-# Format: {data_id: {data: csv_string, timestamp: expiry_time}}
-PROCESSED_DATA_STORE = {}
-EXPIRATION_TIME_SECONDS = 300 # Data expires in 5 minutes (for demonstration purposes)
-# --- END GLOBAL STORAGE ---
+
+# --- SQLITE PERSISTENCE ---
+DB_PATH = os.environ.get("DB_PATH", "processed_data.db")
+EXPIRATION_TIME_SECONDS = 300  # Data expires in 5 minutes (for demonstration purposes)
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS processed_data (
+            data_id TEXT PRIMARY KEY,
+            csv_data TEXT NOT NULL,
+            expiry REAL NOT NULL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+# --- END SQLITE PERSISTENCE ---
 
 # Pydantic model for incoming data (from Streamlit)
 class DataPayload(BaseModel):
@@ -77,12 +99,14 @@ async def process_ai_data(payload: DataPayload):
     # 3. Convert DataFrame to CSV in memory
     csv_in_memory = df.to_csv(index=False)
     
-    # 4. Store the CSV data with its expiration time
-    PROCESSED_DATA_STORE[data_id] = {
-        "data": csv_in_memory,
-        "expiry": time.time() + EXPIRATION_TIME_SECONDS
-    }
-    
+    # 4. Store the CSV data with its expiration time in SQLite
+    expiry = time.time() + EXPIRATION_TIME_SECONDS
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO processed_data (data_id, csv_data, expiry) VALUES (?, ?, ?)", (data_id, csv_in_memory, expiry))
+    conn.commit()
+    conn.close()
+
     # Log to the terminal for confirmation
     print("-" * 50)
     print(f"--- DATA PROCESSED AND STORED ---")
@@ -91,9 +115,7 @@ async def process_ai_data(payload: DataPayload):
     print(f"CSV Header Preview:\n{csv_in_memory.splitlines()[0]}")
     print("-" * 50)
 
-
     # Return the details the 'other AI' needs to fetch the data
-    # Use Railway production domain
     fetch_url = f"https://elegant-consideration-production.up.railway.app/fetch_data/{data_id}"
 
     return JSONResponse(
@@ -112,25 +134,24 @@ async def fetch_data(data_id: str, format: str = "csv"):
     """
     Endpoint for the downstream AI to fetch the processed data using the unique ID (key).
     """
-    data_record = PROCESSED_DATA_STORE.get(data_id)
-    
-    if not data_record or data_record['expiry'] < time.time():
+    # Fetch from SQLite
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT csv_data, expiry FROM processed_data WHERE data_id = ?", (data_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row or row[1] < time.time():
         raise HTTPException(
             status_code=404,
             detail="Data ID (Key) not found or has expired. Please run the generation again."
         )
-
-    csv_data = data_record['data']
-    
+    csv_data = row[0]
     if format.lower() == "json":
-        # Return as JSON (by re-parsing the CSV structure)
         df = pd.read_csv(io.StringIO(csv_data))
         return JSONResponse(
             status_code=200,
             content={"data": df.to_dict(orient="records")}
         )
-    
-    # Default: Return as raw CSV file (most common for analytical pipelines)
     return Response(
         content=csv_data,
         media_type="text/csv",
